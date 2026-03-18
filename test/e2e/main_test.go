@@ -39,6 +39,7 @@ func Test(t *testing.T) {
 
 	tests := map[string]kubetest.TestSuite{
 		"Basics":             testBasics(client),
+		"UpstreamTimeout":    testUpstreamTimeout(client),
 		"H2CUpstream":        testH2CUpstream(client),
 		"ClientCertificates": testClientCertificates(client),
 		"TokenAudience":      testTokenAudience(client),

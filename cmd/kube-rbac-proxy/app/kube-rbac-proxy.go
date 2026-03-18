@@ -132,6 +132,7 @@ type completedProxyRunOptions struct {
 	proxyEndpointsPort    int
 
 	upstreamURL      *url.URL
+	upstreamTimeout  time.Duration
 	upstreamForceH2C bool
 	upstreamCABundle *x509.CertPool
 
@@ -153,6 +154,7 @@ func Complete(o *options.ProxyRunOptions) (*completedProxyRunOptions, error) {
 		insecureListenAddress: o.InsecureListenAddress,
 		secureListenAddress:   o.SecureListenAddress,
 		proxyEndpointsPort:    o.ProxyEndpointsPort,
+		upstreamTimeout:       o.UpstreamTimeout,
 		upstreamForceH2C:      o.UpstreamForceH2C,
 
 		allowPaths:  o.AllowPaths,
@@ -264,7 +266,7 @@ func Run(cfg *completedProxyRunOptions) error {
 		sarAuthorizer,
 	)
 
-	upstreamTransport, err := initTransport(cfg.upstreamCABundle, cfg.tls.UpstreamClientCertFile, cfg.tls.UpstreamClientKeyFile)
+	upstreamTransport, err := initTransport(cfg.upstreamCABundle, cfg.tls.UpstreamClientCertFile, cfg.tls.UpstreamClientKeyFile, cfg.upstreamTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to set up upstream TLS connection: %w", err)
 	}
@@ -304,17 +306,26 @@ func Run(cfg *completedProxyRunOptions) error {
 			}
 		}
 
+		// Enforce upstream timeout via request context so it applies for both
+		// http.Transport (ResponseHeaderTimeout) and http2.Transport (e.g. --upstream-force-h2c).
+		proxyReq := req
+		if cfg.upstreamTimeout > 0 {
+			ctx, cancel := context.WithTimeout(req.Context(), cfg.upstreamTimeout)
+			defer cancel()
+			proxyReq = req.WithContext(ctx)
+		}
+
 		if !ignorePathFound {
 			handlerFunc := proxy.ServeHTTP
 			handlerFunc = filters.WithAuthHeaders(cfg.auth.Authentication.Header, handlerFunc)
 			handlerFunc = filters.WithAuthorization(authorizer, cfg.auth.Authorization, handlerFunc)
 			handlerFunc = filters.WithAuthentication(authenticator, cfg.auth.Authentication.Token.Audiences, handlerFunc)
-			handlerFunc(w, req)
+			handlerFunc(w, proxyReq)
 
 			return
 		}
 
-		proxy.ServeHTTP(w, req)
+		proxy.ServeHTTP(w, proxyReq)
 	})
 	handler = filters.WithAllowPaths(cfg.allowPaths, handler)
 

@@ -2,6 +2,8 @@ FROM registry.ci.openshift.org/ocp/builder:rhel-9-golang-1.25-openshift-4.22 AS 
 WORKDIR /go/src/github.com/brancz/kube-rbac-proxy
 COPY . .
 ENV GO111MODULE=on
+# Generate vendor at build time when not committed (ART / air-gapped builds)
+RUN go mod vendor
 # GOFLAGS is needed to build image without accessing external sources, mostly to comply with ART policies
 ENV GOFLAGS="-mod=vendor"
 RUN GITHUB_URL=github.com/openshift/kube-rbac-proxy VERSION=$(cat VERSION) make build && \
