@@ -1,0 +1,76 @@
+# Syncs changes from openshift/kube-rbac-proxy into this repo and opens/updates a PR.
+# You review and merge the PR when you want to pull in upstream merges.
+name: Sync from openshift/kube-rbac-proxy
+
+on:
+  schedule:
+    # Run daily at 00:00 UTC; adjust as needed
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    # Allow manual "Check for sync" run from Actions tab
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sync:
+    name: Sync and create PR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add openshift remote and fetch
+        run: |
+          git remote add openshift https://github.com/openshift/kube-rbac-proxy.git || true
+          git fetch openshift --depth=500
+
+      - name: Create or checkout sync branch
+        run: |
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          git checkout -B sync/openshift origin/${DEFAULT_BRANCH} 2>/dev/null || git checkout -B sync/openshift ${DEFAULT_BRANCH}
+
+      - name: Merge openshift/kube-rbac-proxy
+        run: |
+          OPENSHIFT_BRANCH="master"
+          OLD_HEAD=$(git rev-parse HEAD)
+          git merge "openshift/${OPENSHIFT_BRANCH}" -m "Sync from openshift/kube-rbac-proxy (${OPENSHIFT_BRANCH})"
+          # Only set MERGE_DONE if we got new commits (merge was not "Already up to date")
+          if [ "$(git rev-parse HEAD)" != "${OLD_HEAD}" ]; then
+            echo "MERGE_DONE=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Push sync branch
+        if: env.MERGE_DONE == '1'
+        run: |
+          git push origin sync/openshift --force-with-lease
+
+      - name: Create or update PR
+        if: env.MERGE_DONE == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          TITLE="Sync from openshift/kube-rbac-proxy"
+          BODY="Automated sync from \`openshift/kube-rbac-proxy\`. Review and merge when ready.
+
+          Triggered by: ${{ github.event_name }} ${{ github.sha }}
+          OpenShift remote: \`openshift/kube-rbac-proxy\`"
+          if gh pr list --head sync/openshift --base "${DEFAULT_BRANCH}" --state open --json number --jq 'length' | grep -q '^0$'; then
+            gh pr create --head sync/openshift --base "${DEFAULT_BRANCH}" --title "${TITLE}" --body "${BODY}"
+          else
+            echo "PR from sync/openshift already exists; it has been updated with the latest merge."
+          fi
