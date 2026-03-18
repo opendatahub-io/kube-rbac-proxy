@@ -3,4 +3,5 @@ manifest-tool
 .idea/*
 .vscode
 tmp
+_upstream/
 vendor/

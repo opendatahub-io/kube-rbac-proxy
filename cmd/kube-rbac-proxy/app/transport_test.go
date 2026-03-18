@@ -38,13 +38,59 @@ import (
 )
 
 func TestInitTransportWithDefault(t *testing.T) {
-	roundTripper, err := initTransport(nil, "", "")
+	roundTripper, err := initTransport(nil, "", "", 0)
 	if err != nil {
 		t.Errorf("want err to be nil, but got %v", err)
 		return
 	}
 	if roundTripper == nil {
 		t.Error("expected roundtripper, got nil")
+	}
+}
+
+func TestInitTransportTimeoutVariations(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout time.Duration
+	}{
+		{name: "zero leaves response header timeout unset", timeout: 0},
+		{name: "five second response header timeout", timeout: 5 * time.Second},
+		{name: "custom short timeout", timeout: 100 * time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			roundTripper, err := initTransport(nil, "", "", tt.timeout)
+			if err != nil {
+				t.Fatalf("initTransport: %v", err)
+			}
+			transport := roundTripper.(*http.Transport)
+			if transport.ResponseHeaderTimeout != tt.timeout {
+				t.Fatalf("ResponseHeaderTimeout = %v, want %v", transport.ResponseHeaderTimeout, tt.timeout)
+			}
+		})
+	}
+}
+
+func TestInitTransportTimeoutWithCA(t *testing.T) {
+	want := 10 * time.Second
+	upstreamCAPEM, err := os.ReadFile("../../../test/ca.pem")
+	if err != nil {
+		t.Fatalf("failed to read '../../../test/ca.pem': %v", err)
+	}
+
+	upstreamCAPool := x509.NewCertPool()
+	upstreamCAPool.AppendCertsFromPEM(upstreamCAPEM)
+
+	roundTripper, err := initTransport(upstreamCAPool, "", "", want)
+	if err != nil {
+		t.Fatalf("want err to be nil, but got %v", err)
+	}
+	transport := roundTripper.(*http.Transport)
+	if transport.ResponseHeaderTimeout != want {
+		t.Fatalf("ResponseHeaderTimeout = %v, want %v", transport.ResponseHeaderTimeout, want)
+	}
+	if transport.TLSClientConfig.RootCAs == nil {
+		t.Fatal("expected root CA to be set, got nil")
 	}
 }
 
@@ -57,7 +103,7 @@ func TestInitTransportWithCustomCA(t *testing.T) {
 	upstreamCAPool := x509.NewCertPool()
 	upstreamCAPool.AppendCertsFromPEM(upstreamCAPEM)
 
-	roundTripper, err := initTransport(upstreamCAPool, "", "")
+	roundTripper, err := initTransport(upstreamCAPool, "", "", 0)
 	if err != nil {
 		t.Fatalf("want err to be nil, but got %v", err)
 	}
@@ -131,7 +177,7 @@ func TestInitTransportWithClientCertAuth(t *testing.T) {
 
 	serverCA := x509.NewCertPool()
 	serverCA.AppendCertsFromPEM(cert)
-	roundTripper, err := initTransport(serverCA, clientCertPath, clientKeyPath)
+	roundTripper, err := initTransport(serverCA, clientCertPath, clientKeyPath, 0)
 	if err != nil {
 		t.Errorf("want err to be nil, but got %v", err)
 		return

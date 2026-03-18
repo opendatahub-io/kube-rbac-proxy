@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -87,6 +88,97 @@ func testBasics(client kubernetes.Interface) kubetest.TestSuite {
 			),
 			Then: kubetest.Actions(
 				kubetest.ClientSucceeds(
+					client,
+					command,
+					nil,
+				),
+			),
+		}.Run(t)
+	}
+}
+
+// slowUpstreamListenPy is a minimal HTTP server on 127.0.0.1:8081 that waits
+// before responding (for upstream-timeout e2e coverage).
+const slowUpstreamListenPy = `from http.server import HTTPServer, BaseHTTPRequestHandler
+import time
+class H(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+    def do_GET(self):
+        time.sleep(3)
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+HTTPServer(("127.0.0.1", 8081), H).serve_forever()
+`
+
+func testUpstreamTimeout(client kubernetes.Interface) kubetest.TestSuite {
+	return func(t *testing.T) {
+		command := `curl --connect-timeout 5 -v -s -k --fail -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" https://kube-rbac-proxy.default.svc.cluster.local:8443/metrics`
+
+		slowUpstream := &corev1.Container{
+			Name:    "prometheus-example-app",
+			Image:   "python:3.12-alpine",
+			Command: []string{"python", "-u", "-c"},
+			Args:    []string{slowUpstreamListenPy},
+		}
+
+		kubetest.Scenario{
+			Name: "WithUpstreamTimeout",
+			Description: `
+				As a client with RBAC, I succeed when upstream-timeout is generous
+				and the upstream responds in time.
+			`,
+			Given: kubetest.Actions(
+				kubetest.NewBasicKubeRBACProxyTestConfig().
+					UpdateFlags(map[string]string{"upstream-timeout": "5s"}).
+					Launch(client),
+			),
+			When: kubetest.Actions(
+				kubetest.PodsAreReady(
+					client,
+					1,
+					"app=kube-rbac-proxy",
+				),
+				kubetest.ServiceIsReady(
+					client,
+					"kube-rbac-proxy",
+				),
+			),
+			Then: kubetest.Actions(
+				kubetest.ClientSucceeds(
+					client,
+					command,
+					nil,
+				),
+			),
+		}.Run(t)
+
+		kubetest.Scenario{
+			Name: "WithShortUpstreamTimeoutAndSlowUpstream",
+			Description: `
+				When upstream-timeout is shorter than the upstream response time,
+				the proxied request fails (e.g. curl --fail on non-2xx).
+			`,
+			Given: kubetest.Actions(
+				kubetest.NewBasicKubeRBACProxyTestConfig().
+					UpdateFlags(map[string]string{"upstream-timeout": "500ms"}).
+					ReplaceUpstream(slowUpstream).
+					Launch(client),
+			),
+			When: kubetest.Actions(
+				kubetest.PodsAreReady(
+					client,
+					1,
+					"app=kube-rbac-proxy",
+				),
+				kubetest.ServiceIsReady(
+					client,
+					"kube-rbac-proxy",
+				),
+			),
+			Then: kubetest.Actions(
+				kubetest.ClientFails(
 					client,
 					command,
 					nil,
