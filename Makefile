@@ -93,8 +93,10 @@ test-container: $(OUT_DIR)/$(PROGRAM_NAME)-linux-$(GOARCH) Dockerfile
 
 test: test-unit test-e2e
 
+unit-test: test-unit ## Alias for test-unit
+
 test-unit:
-	go test -v -race -count=1 $(PKGS)
+	go test -v -race -count=1 -coverprofile=coverage.out $(PKGS)
 
 test-e2e:
 	go test -timeout 55m -v ./test/e2e/ $(TEST_RUN_ARGS)
@@ -125,4 +127,4 @@ $(TOOLING): $(TOOLS_BIN_DIR)
 	@echo Installing tools from scripts/tools.go
 	@cat scripts/tools.go | grep _ | awk -F'"' '{print $$2}' | GOBIN=$(TOOLS_BIN_DIR) xargs -tI % go install -mod=readonly -modfile=scripts/go.mod %
 
-.PHONY: all check-license crossbuild build container push push-% manifest-push curl-container test test-unit test-e2e generate update-go-deps clean kind-delete-cluster kind-create-cluster
+.PHONY: all check-license crossbuild build container push push-% manifest-push curl-container test test-unit unit-test test-e2e generate update-go-deps clean kind-delete-cluster kind-create-cluster
