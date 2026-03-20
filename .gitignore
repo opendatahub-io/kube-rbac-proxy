@@ -3,3 +3,4 @@ manifest-tool
 .idea/*
 .vscode
 tmp
+coverage.out
