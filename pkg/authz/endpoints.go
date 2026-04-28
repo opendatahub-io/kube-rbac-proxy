@@ -92,11 +92,19 @@ type TemplateData struct {
 	FromMethod      string
 }
 
-// PrepareEndpoints splits endpoint paths for efficient matching. Call after loading config.
+// PrepareEndpoints must be called exactly once after building or unmarshaling a Config and
+// before any Format2 endpoint matching. It populates Endpoint.PathParts from Endpoint.Path
+// (via prepareEndpointPatterns) so matchEndpoint can run without splitting paths per request.
+// The main binary calls this from Complete after parseAuthorizationConfigFile; tests and any
+// library user that constructs Config with non-empty Endpoints must call it too. Omitting
+// PrepareEndpoints leaves PathParts nil and endpoint patterns never match.
 func (c *Config) PrepareEndpoints() {
 	c.prepareEndpointPatterns()
 }
 
+// prepareEndpointPatterns sets PathParts for each entry in c.Endpoints. It exists only to
+// implement PrepareEndpoints and must not be called from request handlers or tests; call
+// PrepareEndpoints on the Config instead.
 func (c *Config) prepareEndpointPatterns() {
 	if c == nil {
 		return
@@ -196,7 +204,6 @@ func EndpointAttributesFromRequest(u user.Info, r *http.Request, cfg *Config) (a
 	if cfg == nil || len(cfg.Endpoints) == 0 {
 		return nil, false, nil
 	}
-	cfg.prepareEndpointPatterns()
 	for _, ep := range cfg.Endpoints {
 		if !matchEndpoint(r.URL.Path, ep) {
 			continue

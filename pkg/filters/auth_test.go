@@ -207,6 +207,9 @@ func TestWithAuthorization(t *testing.T) {
 	} {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.cfg != nil {
+				tt.cfg.PrepareEndpoints()
+			}
 			rec := httptest.NewRecorder()
 			filters.WithAuthorization(
 				tt.authz,

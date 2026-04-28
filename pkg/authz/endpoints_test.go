@@ -82,6 +82,7 @@ func TestEndpointAttributesFromRequest_StatusEvents(t *testing.T) {
 			}},
 		}},
 	}
+	cfg.PrepareEndpoints()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/evaluations/jobs/job-1/events", nil)
 	req.Header.Set("X-Tenant", "tenant-ns")
@@ -117,6 +118,7 @@ func TestEndpointAttributesFromRequest_MissingHeader(t *testing.T) {
 			}},
 		}},
 	}
+	cfg.PrepareEndpoints()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/evaluations/jobs/j1/events", nil)
 	_, matched, err := EndpointAttributesFromRequest(testUser("u"), req, cfg)
 	if !matched {
@@ -148,6 +150,7 @@ func TestEndpointAttributesFromRequest_NoMatchUsesFormat1(t *testing.T) {
 			Subresource: "metrics",
 		},
 	}
+	cfg.PrepareEndpoints()
 	// This path does not match /api/v1/other. Format1 applies in pkg/proxy after
 	// EndpointAttributesFromRequest returns matched=false. Here we only assert the latter:
 	req := httptest.NewRequest(http.MethodGet, "/metrics?namespace=ns1", nil)

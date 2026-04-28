@@ -323,6 +323,9 @@ func TestGeneratingAuthorizerAttributes(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.desc, func(t *testing.T) {
 			t.Log(c.req.URL.Query())
+			if c.authzCfg != nil {
+				c.authzCfg.PrepareEndpoints()
+			}
 			n := krpAuthorizerAttributesGetter{authzConfig: c.authzCfg}
 			res, err := n.GetRequestAttributes(nil, c.req)
 			if c.wantErr != "" {
