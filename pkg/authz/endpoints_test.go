@@ -37,14 +37,15 @@ func TestMatchEndpoint(t *testing.T) {
 		expectedMatch bool
 	}{
 		{"/api/v1/jobs", "/api/v1/jobsabc", false},
-		{"/api/v1/jobs", "/api/v1/jobs/123", true},
-		{"/api/v1/jobs/*", "/api/v1/jobs", true},
+		{"/api/v1/jobs", "/api/v1/jobs/123", false},
+		{"/api/v1/jobs/*", "/api/v1/jobs", false},
 		{"/api/v1/jobs/*", "/api/v1/jobs/123", true},
-		{"/api/v1/jobs/*", "/api/v1/jobs/123/details", true},
+		{"/api/v1/jobs/*", "/api/v1/jobs/123/details", false},
 		{"/api/*/jobs/*", "/api/v2/jobs/abc", true},
 		{"/api/*/jobs/*", "/api/v2/users/123", false},
 		{"/api/v1/evaluations/jobs/*/events", "/api/v1/evaluations/jobs", false},
 		{"/api/v1/evaluations/jobs/*/events", "/api/v1/evaluations/jobs/j1/events", true},
+		{"/api/v1/evaluations/jobs/*/events", "/api/v1/evaluations/jobs/j1/events/extra", false},
 	}
 
 	for _, c := range cases {
@@ -59,6 +60,68 @@ func TestMatchEndpoint(t *testing.T) {
 func TestHTTPToKubeVerb(t *testing.T) {
 	if got, want := HTTPToKubeVerb(http.MethodPost), "create"; got != want {
 		t.Fatalf("HTTPToKubeVerb(POST) = %q, want %q", got, want)
+	}
+}
+
+func TestMatchMethods(t *testing.T) {
+	if matchMethods(http.MethodGet, nil) {
+		t.Fatal("nil methods slice must not match")
+	}
+	if matchMethods(http.MethodGet, []string{}) {
+		t.Fatal("empty methods slice must not match")
+	}
+	if !matchMethods(http.MethodGet, []string{"get", "head"}) {
+		t.Fatal("GET must match entry")
+	}
+	if matchMethods(http.MethodPost, []string{"get"}) {
+		t.Fatal("POST must not match GET-only list")
+	}
+	if !matchMethods("GET", []string{"get"}) {
+		t.Fatal("method matching must be case-insensitive")
+	}
+}
+
+func TestValidateAuthorizationConfig_EndpointMappingsMethods(t *testing.T) {
+	if err := ValidateAuthorizationConfig(nil); err != nil {
+		t.Fatalf("nil config: %v", err)
+	}
+	if err := ValidateAuthorizationConfig(&Config{}); err != nil {
+		t.Fatalf("empty endpoints: %v", err)
+	}
+	err := ValidateAuthorizationConfig(&Config{
+		Endpoints: []Endpoint{{
+			Path: "/p",
+			Mappings: []EndpointMapping{{
+				Methods:   nil,
+				Resources: []EndpointResourceRule{{ResourceAttributes: ResourceAttributes{Verb: "get"}}},
+			}},
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected error for nil methods")
+	}
+	err = ValidateAuthorizationConfig(&Config{
+		Endpoints: []Endpoint{{
+			Path: "/p",
+			Mappings: []EndpointMapping{{
+				Methods:   []string{},
+				Resources: []EndpointResourceRule{{ResourceAttributes: ResourceAttributes{Verb: "get"}}},
+			}},
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected error for empty methods")
+	}
+	if err := ValidateAuthorizationConfig(&Config{
+		Endpoints: []Endpoint{{
+			Path: "/p",
+			Mappings: []EndpointMapping{{
+				Methods:   []string{"get"},
+				Resources: []EndpointResourceRule{{ResourceAttributes: ResourceAttributes{Verb: "get"}}},
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -126,6 +189,36 @@ func TestEndpointAttributesFromRequest_MissingHeader(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("expected error for missing header")
+	}
+}
+
+func TestEndpointAttributesFromRequest_InvalidResourceAttributesTemplate(t *testing.T) {
+	cfg := &Config{
+		Endpoints: []Endpoint{{
+			Path: "/x",
+			Mappings: []EndpointMapping{{
+				Methods: []string{"get"},
+				Resources: []EndpointResourceRule{{
+					ResourceAttributes: ResourceAttributes{
+						Namespace: "ns",
+						Resource:  "pods",
+						Verb:      "{{", // unclosed template action → parse error
+					},
+				}},
+			}},
+		}},
+	}
+	cfg.PrepareEndpoints()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	_, matched, err := EndpointAttributesFromRequest(testUser("u"), req, cfg)
+	if !matched {
+		t.Fatal("expected matched path")
+	}
+	if err == nil {
+		t.Fatal("expected template parse error")
+	}
+	if !strings.Contains(err.Error(), "verb") || !strings.Contains(err.Error(), "parse") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -115,7 +115,9 @@ func (c *Config) prepareEndpointPatterns() {
 }
 
 // MatchEndpoint reports whether requestPath matches the configured endpoint pattern.
-// A path segment equal to "*" in the pattern matches any single request segment.
+// Matching is exact by segment count: requestPath split into the same number of segments as
+// endpoint.Path (after PrepareEndpoints). A pattern segment "*" matches exactly one request
+// segment; it does not match zero or multiple trailing segments.
 func MatchEndpoint(requestPath string, endpoint Endpoint) bool {
 	return matchEndpoint(requestPath, endpoint)
 }
@@ -126,12 +128,14 @@ func matchEndpoint(requestPath string, endpoint Endpoint) bool {
 		return false
 	}
 	endpointParts := strings.Split(requestPath, "/")
-
+	if len(endpointParts) != len(patternParts) {
+		return false
+	}
 	for i, part := range patternParts {
 		if part == "*" {
 			continue
 		}
-		if i >= len(endpointParts) || endpointParts[i] != part {
+		if endpointParts[i] != part {
 			return false
 		}
 	}
@@ -140,7 +144,7 @@ func matchEndpoint(requestPath string, endpoint Endpoint) bool {
 
 func matchMethods(fromRequest string, fromConfig []string) bool {
 	if len(fromConfig) == 0 {
-		return true
+		return false
 	}
 	m := strings.ToLower(fromRequest)
 	for _, c := range fromConfig {
@@ -149,6 +153,23 @@ func matchMethods(fromRequest string, fromConfig []string) bool {
 		}
 	}
 	return false
+}
+
+// ValidateAuthorizationConfig checks authorization config for inconsistencies that would
+// otherwise fail silently at runtime. It returns an error if any Format2 endpoint mapping
+// has an empty methods list (YAML "methods: []" or omitted methods).
+func ValidateAuthorizationConfig(c *Config) error {
+	if c == nil {
+		return nil
+	}
+	for ei, ep := range c.Endpoints {
+		for mi, m := range ep.Mappings {
+			if len(m.Methods) == 0 {
+				return fmt.Errorf("authorization.endpoints[%d] (path %q): mappings[%d] must specify a non-empty methods list", ei, ep.Path, mi)
+			}
+		}
+	}
+	return nil
 }
 
 // HTTPToKubeVerb maps an HTTP method to a Kubernetes API verb.
@@ -173,19 +194,27 @@ func HTTPToKubeVerb(httpVerb string) string {
 	}
 }
 
-func applyEndpointFieldTemplate(templateString string, values TemplateData) string {
+func applyEndpointFieldTemplate(templateString string, values TemplateData) (string, error) {
 	if templateString == "" {
-		return ""
+		return "", nil
 	}
 	tmpl, err := template.New("endpointField").Parse(templateString)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("parse template %q: %w", templateString, err)
 	}
 	out := bytes.NewBuffer(nil)
 	if err := tmpl.Execute(out, values); err != nil {
-		return ""
+		return "", fmt.Errorf("execute template %q: %w", templateString, err)
 	}
-	return out.String()
+	return out.String(), nil
+}
+
+func expandEndpointResourceField(fieldName, templateString string, tv TemplateData) (string, error) {
+	s, err := applyEndpointFieldTemplate(templateString, tv)
+	if err != nil {
+		return "", fmt.Errorf("resourceAttributes.%s: %w", fieldName, err)
+	}
+	return s, nil
 }
 
 func findResourcesForEndpoint(r *http.Request, ep Endpoint) []EndpointResourceRule {
@@ -242,20 +271,48 @@ func attributesFromEndpointResourceRules(u user.Info, r *http.Request, rules []E
 		}
 
 		ra := rule.ResourceAttributes
-		verb := applyEndpointFieldTemplate(ra.Verb, tv)
+		verb, err := expandEndpointResourceField("verb", ra.Verb, tv)
+		if err != nil {
+			return nil, err
+		}
 		if verb == "" {
 			verb = tv.FromMethod
+		}
+
+		ns, err := expandEndpointResourceField("namespace", ra.Namespace, tv)
+		if err != nil {
+			return nil, err
+		}
+		group, err := expandEndpointResourceField("apiGroup", ra.APIGroup, tv)
+		if err != nil {
+			return nil, err
+		}
+		version, err := expandEndpointResourceField("apiVersion", ra.APIVersion, tv)
+		if err != nil {
+			return nil, err
+		}
+		resource, err := expandEndpointResourceField("resource", ra.Resource, tv)
+		if err != nil {
+			return nil, err
+		}
+		subresource, err := expandEndpointResourceField("subresource", ra.Subresource, tv)
+		if err != nil {
+			return nil, err
+		}
+		name, err := expandEndpointResourceField("name", ra.Name, tv)
+		if err != nil {
+			return nil, err
 		}
 
 		out = append(out, authorizer.AttributesRecord{
 			User:            u,
 			Verb:            verb,
-			Namespace:       applyEndpointFieldTemplate(ra.Namespace, tv),
-			APIGroup:        applyEndpointFieldTemplate(ra.APIGroup, tv),
-			APIVersion:      applyEndpointFieldTemplate(ra.APIVersion, tv),
-			Resource:        applyEndpointFieldTemplate(ra.Resource, tv),
-			Subresource:     applyEndpointFieldTemplate(ra.Subresource, tv),
-			Name:            applyEndpointFieldTemplate(ra.Name, tv),
+			Namespace:       ns,
+			APIGroup:        group,
+			APIVersion:      version,
+			Resource:        resource,
+			Subresource:     subresource,
+			Name:            name,
 			ResourceRequest: true,
 		})
 	}

@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/brancz/kube-rbac-proxy/pkg/authz"
@@ -35,6 +36,7 @@ func Test_parseAuthorizationConfigFile(t *testing.T) {
 		fileContent string
 		want        *authz.Config
 		wantErr     bool
+		wantErrSub  string
 	}{
 		{
 			name: "resources",
@@ -152,6 +154,35 @@ func Test_parseAuthorizationConfigFile(t *testing.T) {
 				}},
 			},
 		},
+		{
+			name: "Format2 mapping rejects empty methods list",
+			fileContent: `authorization:
+  endpoints:
+    - path: /api/v1/x
+      mappings:
+        - methods: []
+          resources:
+            - resourceAttributes:
+                resource: pods
+                verb: get`,
+			want:       nil,
+			wantErr:    true,
+			wantErrSub: "non-empty methods",
+		},
+		{
+			name: "Format2 mapping rejects omitted methods",
+			fileContent: `authorization:
+  endpoints:
+    - path: /api/v1/y
+      mappings:
+        - resources:
+            - resourceAttributes:
+                resource: pods
+                verb: get`,
+			want:       nil,
+			wantErr:    true,
+			wantErrSub: "non-empty methods",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -162,6 +193,12 @@ func Test_parseAuthorizationConfigFile(t *testing.T) {
 			got, err := parseAuthorizationConfigFile(filePath)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("parseAuthorizationConfigFile() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				if tt.wantErrSub != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErrSub)) {
+					t.Errorf("parseAuthorizationConfigFile() error = %v, want substring %q", err, tt.wantErrSub)
+				}
 				return
 			}
 			if !reflect.DeepEqual(got, tt.want) {

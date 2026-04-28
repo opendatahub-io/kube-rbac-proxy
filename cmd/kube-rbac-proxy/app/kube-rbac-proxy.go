@@ -555,5 +555,11 @@ func parseAuthorizationConfigFile(filePath string) (*authz.Config, error) {
 		return nil, fmt.Errorf("failed to parse config file content: %w", err)
 	}
 
+	if configFile.AuthorizationConfig != nil {
+		if err := authz.ValidateAuthorizationConfig(configFile.AuthorizationConfig); err != nil {
+			return nil, fmt.Errorf("invalid authorization config: %w", err)
+		}
+	}
+
 	return configFile.AuthorizationConfig, nil
 }
