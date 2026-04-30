@@ -260,7 +260,7 @@ func attributesFromEndpointResourceRules(u user.Info, r *http.Request, rules []E
 			}
 			tv.FromHeader = v
 		}
-		qp := rewriteQueryParamName(&rule.Rewrites)
+		queryParamName := rewriteQueryParamName(&rule.Rewrites)
 		if qp != "" {
 			vs, ok := r.URL.Query()[qp]
 			if !ok || len(vs) == 0 {
