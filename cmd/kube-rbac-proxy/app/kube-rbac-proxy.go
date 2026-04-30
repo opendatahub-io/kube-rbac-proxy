@@ -188,6 +188,9 @@ func Complete(o *options.ProxyRunOptions) (*completedProxyRunOptions, error) {
 			return nil, fmt.Errorf("failed to read the config file: %w", err)
 		}
 	}
+	if completed.auth.Authorization != nil {
+		completed.auth.Authorization.PrepareEndpoints()
+	}
 
 	kubeconfig, err := initKubeConfig(o.KubeconfigLocation)
 	if err != nil {
@@ -550,6 +553,12 @@ func parseAuthorizationConfigFile(filePath string) (*authz.Config, error) {
 
 	if err := yaml.Unmarshal(b, &configFile); err != nil {
 		return nil, fmt.Errorf("failed to parse config file content: %w", err)
+	}
+
+	if configFile.AuthorizationConfig != nil {
+		if err := authz.ValidateAuthorizationConfig(configFile.AuthorizationConfig); err != nil {
+			return nil, fmt.Errorf("invalid authorization config: %w", err)
+		}
 	}
 
 	return configFile.AuthorizationConfig, nil
