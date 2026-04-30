@@ -251,7 +251,7 @@ func EndpointAttributesFromRequest(u user.Info, r *http.Request, cfg *Config) (a
 func attributesFromEndpointResourceRules(u user.Info, r *http.Request, rules []EndpointResourceRule) ([]authorizer.Attributes, error) {
 	var out []authorizer.Attributes
 	for _, rule := range rules {
-		tv := TemplateData{FromMethod: HTTPToKubeVerb(r.Method)}
+		td := TemplateData{FromMethod: HTTPToKubeVerb(r.Method)}
 
 		if rule.Rewrites.ByHTTPHeader != nil && rule.Rewrites.ByHTTPHeader.Name != "" {
 			v := r.Header.Get(rule.Rewrites.ByHTTPHeader.Name)
