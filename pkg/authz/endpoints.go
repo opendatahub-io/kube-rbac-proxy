@@ -237,7 +237,7 @@ func EndpointAttributesFromRequest(u user.Info, r *http.Request, cfg *Config) (a
 	if cfg == nil || len(cfg.Endpoints) == 0 {
 		return nil, false, nil
 	}
-	for _, ep := range cfg.Endpoints {
+	for _, endpoint := range cfg.Endpoints {
 		if !matchEndpoint(r.URL.Path, ep) {
 			continue
 		}
