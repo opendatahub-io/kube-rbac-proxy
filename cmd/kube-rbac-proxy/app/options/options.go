@@ -50,7 +50,6 @@ type ProxyRunOptions struct {
 	AllowPaths         []string
 	IgnorePaths        []string
 
-	HTTP2Disable              bool
 	HTTP2MaxConcurrentStreams uint32
 	HTTP2MaxSize              uint32
 
@@ -106,7 +105,7 @@ func (o *ProxyRunOptions) Flags() k8sapiflag.NamedFlagSets {
 	// TLS flags
 	flagset.StringVar(&o.TLS.CertFile, "tls-cert-file", "", "File containing the default x509 Certificate for HTTPS. (CA cert, if any, concatenated after server cert)")
 	flagset.StringVar(&o.TLS.KeyFile, "tls-private-key-file", "", "File containing the default x509 private key matching --tls-cert-file.")
-	flagset.StringVar(&o.TLS.MinVersion, "tls-min-version", "VersionTLS12", "Minimum TLS version supported. Value must match version names from https://golang.org/pkg/crypto/tls/#pkg-constants.")
+	flagset.StringVar(&o.TLS.MinVersion, "tls-min-version", "VersionTLS12", "Minimum TLS version supported. Accepts both Go constant names (VersionTLS12, VersionTLS13) and short names (TLS1.2, TLS1.3).")
 	flagset.StringSliceVar(&o.TLS.CipherSuites, "tls-cipher-suites", nil, "Comma-separated list of cipher suites for the server. Values are from tls package constants (https://golang.org/pkg/crypto/tls/#pkg-constants). If omitted, the default Go cipher suites will be used")
 	flagset.DurationVar(&o.TLS.ReloadInterval, "tls-reload-interval", time.Minute, "[DEPRECATED] The interval at which to watch for TLS certificate changes, by default set to 1 minute.")
 	flagset.StringVar(&o.TLS.UpstreamClientCertFile, "upstream-client-cert-file", "", "If set, the client will be used to authenticate the proxy to upstream. Requires --upstream-client-key-file to be set, too.")
@@ -136,7 +135,6 @@ func (o *ProxyRunOptions) Flags() k8sapiflag.NamedFlagSets {
 	flagset.IntVar(&o.Burst, "kube-api-burst", 0, "kube-api burst value; needed when kube-api-qps is set")
 
 	// HTTP2 flags
-	flagset.BoolVar(&o.HTTP2Disable, "http2-disable", false, "Disable HTTP/2 support")
 	flagset.Uint32Var(&o.HTTP2MaxConcurrentStreams, "http2-max-concurrent-streams", 100, "The maximum number of concurrent streams per HTTP/2 connection.")
 	flagset.Uint32Var(&o.HTTP2MaxSize, "http2-max-size", 256*1024, "The maximum number of bytes that the server will accept for frame size and buffer per stream in a HTTP/2 request.")
 
