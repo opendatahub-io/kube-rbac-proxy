@@ -1,0 +1,30 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: report-reader
+  namespace: tenant-a
+rules:
+  - apiGroups:
+      - reports.example.io
+    resources:
+      - reports
+    resourceNames:
+      - report-17
+    verbs:
+      - get
+      - update
+      - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: report-reader
+  namespace: tenant-a
+subjects:
+  - kind: ServiceAccount
+    name: tenant-a-client
+    namespace: tenant-a
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: report-reader

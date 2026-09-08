@@ -90,12 +90,13 @@ type EndpointResourceRule struct {
 }
 
 // TemplateData is passed to text/template when expanding resourceAttributes in Format2 endpoint rules.
-// Value is set to FromHeader or FromQueryString when those rewrites are populated (supports {{ .Value }} like Format1).
+// Value is set to FromHeader, FromQueryString, or FromPath (in that priority order) for {{ .Value }} compatibility.
 type TemplateData struct {
 	Value           string
 	FromHeader      string
 	FromQueryString string
 	FromMethod      string
+	FromPath        string
 }
 
 // PrepareEndpoints must be called exactly once after building or unmarshaling a Config and
@@ -120,18 +121,19 @@ func (cfg *Config) prepareEndpointPatterns() {
 	}
 }
 
-// MatchEndpoint reports whether requestPath matches the configured endpoint pattern.
+// MatchEndpoint reports whether requestPath matches the configured endpoint pattern and returns
+// the value captured by the first "*" wildcard segment (empty if no wildcard or no match).
 // requestPath is cleaned with path.Clean (collapse duplicate slashes, ".", "..", trailing slash)
 // before splitting. Matching is exact by segment count against endpoint.Path (after PrepareEndpoints).
 // A pattern segment "*" matches exactly one request segment; it does not match zero or multiple trailing segments.
-func MatchEndpoint(requestPath string, endpoint Endpoint) bool {
+func MatchEndpoint(requestPath string, endpoint Endpoint) (bool, string) {
 	return matchEndpoint(requestPath, endpoint)
 }
 
-func matchEndpoint(requestPath string, endpoint Endpoint) bool {
+func matchEndpoint(requestPath string, endpoint Endpoint) (bool, string) {
 	patternParts := endpoint.PathParts
 	if len(patternParts) == 0 {
-		return false
+		return false, ""
 	}
 	if requestPath == "" {
 		requestPath = "/"
@@ -139,17 +141,21 @@ func matchEndpoint(requestPath string, endpoint Endpoint) bool {
 	requestPath = path.Clean(requestPath)
 	endpointParts := strings.Split(requestPath, "/")
 	if len(endpointParts) != len(patternParts) {
-		return false
+		return false, ""
 	}
+	var captured string
 	for segmentIndex, patternSegment := range patternParts {
 		if patternSegment == "*" {
+			if captured == "" {
+				captured = endpointParts[segmentIndex]
+			}
 			continue
 		}
 		if endpointParts[segmentIndex] != patternSegment {
-			return false
+			return false, ""
 		}
 	}
-	return true
+	return true, captured
 }
 
 func matchMethods(fromRequest string, fromConfig []string) bool {
@@ -282,23 +288,24 @@ func EndpointAttributesFromRequest(userInfo user.Info, request *http.Request, cf
 		return nil, false, nil
 	}
 	for _, endpoint := range cfg.Endpoints {
-		if !matchEndpoint(request.URL.Path, endpoint) {
+		matched, pathParam := matchEndpoint(request.URL.Path, endpoint)
+		if !matched {
 			continue
 		}
 		rules, methodOK := rulesForEndpointMethod(request, endpoint)
 		if !methodOK {
 			return nil, true, ErrEndpointMethodNotAllowed
 		}
-		attrs, err := attributesFromEndpointResourceRules(userInfo, request, rules)
+		attrs, err := attributesFromEndpointResourceRules(userInfo, request, rules, pathParam)
 		return attrs, true, err
 	}
 	return nil, false, nil
 }
 
-func attributesFromEndpointResourceRules(userInfo user.Info, request *http.Request, rules []EndpointResourceRule) ([]authorizer.Attributes, error) {
+func attributesFromEndpointResourceRules(userInfo user.Info, request *http.Request, rules []EndpointResourceRule, pathParam string) ([]authorizer.Attributes, error) {
 	var attrsOut []authorizer.Attributes
 	for _, rule := range rules {
-		templateData := TemplateData{FromMethod: HTTPToKubeVerb(request.Method)}
+		templateData := TemplateData{FromMethod: HTTPToKubeVerb(request.Method), FromPath: pathParam}
 
 		if rule.Rewrites.ByHTTPHeader != nil && rule.Rewrites.ByHTTPHeader.Name != "" {
 			headerValue := request.Header.Get(rule.Rewrites.ByHTTPHeader.Name)
@@ -319,6 +326,8 @@ func attributesFromEndpointResourceRules(userInfo user.Info, request *http.Reque
 			templateData.Value = templateData.FromHeader
 		} else if templateData.FromQueryString != "" {
 			templateData.Value = templateData.FromQueryString
+		} else if templateData.FromPath != "" {
+			templateData.Value = templateData.FromPath
 		}
 
 		resAttrs := rule.ResourceAttributes

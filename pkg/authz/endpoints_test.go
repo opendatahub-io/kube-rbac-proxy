@@ -53,7 +53,7 @@ func TestMatchEndpoint(t *testing.T) {
 
 	for _, c := range cases {
 		ep := Endpoint{Path: c.pattern, PathParts: strings.Split(c.pattern, "/")}
-		match := MatchEndpoint(c.path, ep)
+		match, _ := MatchEndpoint(c.path, ep)
 		if match != c.expectedMatch {
 			t.Errorf("MatchEndpoint(%q, pattern %q) = %v, want %v", c.path, c.pattern, match, c.expectedMatch)
 		}
@@ -390,6 +390,136 @@ func TestEndpointAttributesFromRequest_NoMatchUsesFormat1(t *testing.T) {
 	}
 	if attrs != nil {
 		t.Fatalf("expected nil attrs from EndpointAttributesFromRequest, got %#v", attrs)
+	}
+}
+
+func TestMatchEndpoint_CapturesFirstWildcard(t *testing.T) {
+	cases := []struct {
+		pattern         string
+		path            string
+		expectedCapture string
+	}{
+		{"/api/v1/tenants/*/metrics", "/api/v1/tenants/tenant-a/metrics", "tenant-a"},
+		{"/api/*/tenants/*/jobs", "/api/v2/tenants/my-ns/jobs", "v2"}, // first * wins
+		{"/api/v1/jobs", "/api/v1/jobs", ""},                          // no wildcard
+		{"/api/v1/jobs/*", "/api/v1/jobs/123", "123"},
+	}
+	for _, c := range cases {
+		ep := Endpoint{Path: c.pattern, PathParts: strings.Split(c.pattern, "/")}
+		matched, captured := MatchEndpoint(c.path, ep)
+		if !matched {
+			t.Errorf("MatchEndpoint(%q, %q): expected match", c.path, c.pattern)
+			continue
+		}
+		if captured != c.expectedCapture {
+			t.Errorf("MatchEndpoint(%q, %q) captured=%q, want %q", c.path, c.pattern, captured, c.expectedCapture)
+		}
+	}
+}
+
+func TestEndpointAttributesFromRequest_FromPath(t *testing.T) {
+	cfg := &Config{
+		Endpoints: []Endpoint{{
+			Path: "/api/v1/tenants/*/metrics",
+			Mappings: []EndpointMapping{{
+				Methods: []string{"get"},
+				Resources: []EndpointResourceRule{{
+					ResourceAttributes: ResourceAttributes{
+						Namespace:   "{{.FromPath}}",
+						APIVersion:  "v1",
+						Resource:    "namespace",
+						Subresource: "metrics",
+					},
+				}},
+			}},
+		}},
+	}
+	cfg.PrepareEndpoints()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tenants/tenant-a/metrics", nil)
+	attrs, matched, err := EndpointAttributesFromRequest(testUser("u"), req, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !matched {
+		t.Fatal("expected path to match")
+	}
+	if len(attrs) != 1 {
+		t.Fatalf("len(attrs)=%d, want 1", len(attrs))
+	}
+	rec := attrs[0].(authorizer.AttributesRecord)
+	if rec.Namespace != "tenant-a" {
+		t.Fatalf("Namespace=%q, want %q", rec.Namespace, "tenant-a")
+	}
+	if rec.Subresource != "metrics" {
+		t.Fatalf("Subresource=%q, want %q", rec.Subresource, "metrics")
+	}
+}
+
+func TestEndpointAttributesFromRequest_FromPathValueFallback(t *testing.T) {
+	// When no header or query rewrite is configured, {{ .Value }} should fall back to FromPath.
+	cfg := &Config{
+		Endpoints: []Endpoint{{
+			Path: "/api/v1/namespaces/*/pods",
+			Mappings: []EndpointMapping{{
+				Methods: []string{"get"},
+				Resources: []EndpointResourceRule{{
+					ResourceAttributes: ResourceAttributes{
+						Namespace: "{{.Value}}",
+						Resource:  "pods",
+					},
+				}},
+			}},
+		}},
+	}
+	cfg.PrepareEndpoints()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/kube-system/pods", nil)
+	attrs, matched, err := EndpointAttributesFromRequest(testUser("u"), req, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !matched {
+		t.Fatal("expected match")
+	}
+	rec := attrs[0].(authorizer.AttributesRecord)
+	if rec.Namespace != "kube-system" {
+		t.Fatalf("Namespace=%q, want %q", rec.Namespace, "kube-system")
+	}
+}
+
+func TestEndpointAttributesFromRequest_HeaderTakesPrecedenceOverPath(t *testing.T) {
+	// When both header and path are available, header wins for .Value
+	cfg := &Config{
+		Endpoints: []Endpoint{{
+			Path: "/api/v1/tenants/*/events",
+			Mappings: []EndpointMapping{{
+				Methods: []string{"post"},
+				Resources: []EndpointResourceRule{{
+					Rewrites: SubjectAccessReviewRewrites{
+						ByHTTPHeader: &HTTPHeaderRewriteConfig{Name: "X-Tenant"},
+					},
+					ResourceAttributes: ResourceAttributes{
+						Namespace: "{{.Value}}",
+						Resource:  "events",
+						Verb:      "create",
+					},
+				}},
+			}},
+		}},
+	}
+	cfg.PrepareEndpoints()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tenants/path-ns/events", nil)
+	req.Header.Set("X-Tenant", "header-ns")
+
+	attrs, _, err := EndpointAttributesFromRequest(testUser("u"), req, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := attrs[0].(authorizer.AttributesRecord)
+	if rec.Namespace != "header-ns" {
+		t.Fatalf("Namespace=%q, want %q (header should take precedence over path for .Value)", rec.Namespace, "header-ns")
 	}
 }
 
