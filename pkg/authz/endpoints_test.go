@@ -20,6 +20,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -39,16 +40,17 @@ func TestMatchEndpoint(t *testing.T) {
 	}{
 		{"/api/v1/jobs", "/api/v1/jobsabc", false},
 		{"/api/v1/jobs", "/api/v1/jobs/123", false},
-		{"/api/v1/jobs/*", "/api/v1/jobs", false},
+		{"/api/v1/jobs/{job}", "/api/v1/jobs", false},
+		{"/api/v1/jobs/{job}", "/api/v1/jobs/123", true},
 		{"/api/v1/jobs/*", "/api/v1/jobs/123", true},
-		{"/api/v1/jobs/*", "/api/v1/jobs/123/details", false},
-		{"/api/*/jobs/*", "/api/v2/jobs/abc", true},
-		{"/api/*/jobs/*", "/api/v2/users/123", false},
-		{"/api/v1/evaluations/jobs/*/events", "/api/v1/evaluations/jobs", false},
-		{"/api/v1/evaluations/jobs/*/events", "/api/v1/evaluations/jobs/j1/events", true},
-		{"/api/v1/evaluations/jobs/*/events", "/api/v1/evaluations/jobs/j1/events/extra", false},
-		{"/api/v1/jobs/*", "//api/v1/jobs/99", true},
-		{"/api/v1/jobs/*", "/api/v1/jobs/99/", true},
+		{"/api/v1/jobs/{job}", "/api/v1/jobs/123/details", false},
+		{"/api/{version}/jobs/{job}", "/api/v2/jobs/abc", true},
+		{"/api/{version}/jobs/{job}", "/api/v2/users/123", false},
+		{"/api/v1/evaluations/jobs/{job}/events", "/api/v1/evaluations/jobs", false},
+		{"/api/v1/evaluations/jobs/{job}/events", "/api/v1/evaluations/jobs/j1/events", true},
+		{"/api/v1/evaluations/jobs/{job}/events", "/api/v1/evaluations/jobs/j1/events/extra", false},
+		{"/api/v1/jobs/{job}", "//api/v1/jobs/99", true},
+		{"/api/v1/jobs/{job}", "/api/v1/jobs/99/", true},
 	}
 
 	for _, c := range cases {
@@ -222,6 +224,28 @@ func TestValidateAuthorizationConfig_invalidEndpointShape(t *testing.T) {
 			}}},
 			substr: "byQueryParameter",
 		},
+		{
+			name: "duplicate capture",
+			cfg: &Config{Endpoints: []Endpoint{{
+				Path: "/api/{tenant}/reports/{tenant}",
+				Mappings: []EndpointMapping{{
+					Methods:   []string{"get"},
+					Resources: []EndpointResourceRule{{ResourceAttributes: ResourceAttributes{Verb: "get", Resource: "reports"}}},
+				}},
+			}}},
+			substr: "duplicate path capture",
+		},
+		{
+			name: "invalid capture name",
+			cfg: &Config{Endpoints: []Endpoint{{
+				Path: "/api/{tenant-id}/reports",
+				Mappings: []EndpointMapping{{
+					Methods:   []string{"get"},
+					Resources: []EndpointResourceRule{{ResourceAttributes: ResourceAttributes{Verb: "get", Resource: "reports"}}},
+				}},
+			}}},
+			substr: "invalid path capture name",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -393,16 +417,15 @@ func TestEndpointAttributesFromRequest_NoMatchUsesFormat1(t *testing.T) {
 	}
 }
 
-func TestMatchEndpoint_CapturesFirstWildcard(t *testing.T) {
+func TestMatchEndpoint_CapturesNamedSegments(t *testing.T) {
 	cases := []struct {
-		pattern         string
-		path            string
-		expectedCapture string
+		pattern string
+		path    string
+		want    map[string]string
 	}{
-		{"/api/v1/tenants/*/metrics", "/api/v1/tenants/tenant-a/metrics", "tenant-a"},
-		{"/api/*/tenants/*/jobs", "/api/v2/tenants/my-ns/jobs", "v2"}, // first * wins
-		{"/api/v1/jobs", "/api/v1/jobs", ""},                          // no wildcard
-		{"/api/v1/jobs/*", "/api/v1/jobs/123", "123"},
+		{"/api/v1/tenants/{tenant}/metrics", "/api/v1/tenants/tenant-a/metrics", map[string]string{"tenant": "tenant-a"}},
+		{"/api/{version}/tenants/{tenant}/jobs/{job}", "/api/v2/tenants/my-ns/jobs/job-1", map[string]string{"version": "v2", "tenant": "my-ns", "job": "job-1"}},
+		{"/api/v1/jobs", "/api/v1/jobs", map[string]string{}},
 	}
 	for _, c := range cases {
 		ep := Endpoint{Path: c.pattern, PathParts: strings.Split(c.pattern, "/")}
@@ -411,24 +434,24 @@ func TestMatchEndpoint_CapturesFirstWildcard(t *testing.T) {
 			t.Errorf("MatchEndpoint(%q, %q): expected match", c.path, c.pattern)
 			continue
 		}
-		if captured != c.expectedCapture {
-			t.Errorf("MatchEndpoint(%q, %q) captured=%q, want %q", c.path, c.pattern, captured, c.expectedCapture)
+		if !reflect.DeepEqual(captured, c.want) {
+			t.Errorf("MatchEndpoint(%q, %q) captured=%v, want %v", c.path, c.pattern, captured, c.want)
 		}
 	}
 }
 
-func TestEndpointAttributesFromRequest_FromPath(t *testing.T) {
+func TestEndpointAttributesFromRequest_NamedPathCaptures(t *testing.T) {
 	cfg := &Config{
 		Endpoints: []Endpoint{{
-			Path: "/api/v1/tenants/*/metrics",
+			Path: "/api/v1/tenants/{tenant}/reports/{report}",
 			Mappings: []EndpointMapping{{
 				Methods: []string{"get"},
 				Resources: []EndpointResourceRule{{
 					ResourceAttributes: ResourceAttributes{
-						Namespace:   "{{.FromPath}}",
-						APIVersion:  "v1",
-						Resource:    "namespace",
-						Subresource: "metrics",
+						Namespace: "{{ index .PathParams \"tenant\" }}",
+						Name:      "{{ index .PathParams \"report\" }}",
+						APIGroup:  "reports.example.io",
+						Resource:  "reports",
 					},
 				}},
 			}},
@@ -436,7 +459,7 @@ func TestEndpointAttributesFromRequest_FromPath(t *testing.T) {
 	}
 	cfg.PrepareEndpoints()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/tenants/tenant-a/metrics", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tenants/tenant-a/reports/report-17", nil)
 	attrs, matched, err := EndpointAttributesFromRequest(testUser("u"), req, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -448,19 +471,18 @@ func TestEndpointAttributesFromRequest_FromPath(t *testing.T) {
 		t.Fatalf("len(attrs)=%d, want 1", len(attrs))
 	}
 	rec := attrs[0].(authorizer.AttributesRecord)
-	if rec.Namespace != "tenant-a" {
-		t.Fatalf("Namespace=%q, want %q", rec.Namespace, "tenant-a")
+	if rec.Namespace != "tenant-a" || rec.Name != "report-17" {
+		t.Fatalf("unexpected resource identity: namespace=%q name=%q", rec.Namespace, rec.Name)
 	}
-	if rec.Subresource != "metrics" {
-		t.Fatalf("Subresource=%q, want %q", rec.Subresource, "metrics")
+	if rec.APIGroup != "reports.example.io" || rec.Resource != "reports" {
+		t.Fatalf("unexpected resource: apiGroup=%q resource=%q", rec.APIGroup, rec.Resource)
 	}
 }
 
-func TestEndpointAttributesFromRequest_FromPathValueFallback(t *testing.T) {
-	// When no header or query rewrite is configured, {{ .Value }} should fall back to FromPath.
+func TestEndpointAttributesFromRequest_PathDoesNotPopulateValue(t *testing.T) {
 	cfg := &Config{
 		Endpoints: []Endpoint{{
-			Path: "/api/v1/namespaces/*/pods",
+			Path: "/api/v1/namespaces/{namespace}/pods",
 			Mappings: []EndpointMapping{{
 				Methods: []string{"get"},
 				Resources: []EndpointResourceRule{{
@@ -483,13 +505,13 @@ func TestEndpointAttributesFromRequest_FromPathValueFallback(t *testing.T) {
 		t.Fatal("expected match")
 	}
 	rec := attrs[0].(authorizer.AttributesRecord)
-	if rec.Namespace != "kube-system" {
-		t.Fatalf("Namespace=%q, want %q", rec.Namespace, "kube-system")
+	if rec.Namespace != "" {
+		t.Fatalf("Namespace=%q, want empty because .Value is reserved for rewrites", rec.Namespace)
 	}
 }
 
-func TestEndpointAttributesFromRequest_HeaderTakesPrecedenceOverPath(t *testing.T) {
-	// When both header and path are available, header wins for .Value
+func TestEndpointAttributesFromRequest_LegacyWildcardHeaderRewrite(t *testing.T) {
+	// Legacy '*' segments still match, while the header supplies .Value for the SAR template.
 	cfg := &Config{
 		Endpoints: []Endpoint{{
 			Path: "/api/v1/tenants/*/events",
@@ -519,7 +541,7 @@ func TestEndpointAttributesFromRequest_HeaderTakesPrecedenceOverPath(t *testing.
 	}
 	rec := attrs[0].(authorizer.AttributesRecord)
 	if rec.Namespace != "header-ns" {
-		t.Fatalf("Namespace=%q, want %q (header should take precedence over path for .Value)", rec.Namespace, "header-ns")
+		t.Fatalf("Namespace=%q, want %q (legacy wildcard must not replace header .Value)", rec.Namespace, "header-ns")
 	}
 }
 

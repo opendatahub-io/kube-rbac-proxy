@@ -19,11 +19,34 @@ authorization:
     verb: get
 ```
 
+Endpoint path segments support two forms:
+
+- `*` is the legacy match-only placeholder. It matches exactly one segment and is not exposed to templates.
+- `{name}` is a named capture. It matches exactly one segment and is available as `{{ index .PathParams "name" }}`.
+
+For example:
+
+```yaml
+authorization:
+  endpoints:
+    - path: /api/v1/jobs/*/{id}
+      mappings:
+        - methods: [get]
+          resources:
+            - resourceAttributes:
+                apiGroup: batch.example.io
+                resource: jobs
+                name: '{{ index .PathParams "id" }}'
+                verb: get
+```
+
+For `/api/v1/jobs/queue/123`, the `*` segment matches `queue` and `{id}` captures `123`. Multiple named captures are supported; capture names must be unique within an endpoint.
+
 ### Format2 (Endpoint-Specific)
 ```yaml
 authorization:
   endpoints:
-    - path: /api/v1/evaluations/jobs/*/events
+    - path: /api/v1/evaluations/jobs/{job}/events
       mappings:
         - methods: [post]
           resources:
@@ -32,6 +55,7 @@ authorization:
                   name: X-Tenant
               resourceAttributes:
                 namespace: "{{.FromHeader}}"
+                name: '{{ index .PathParams "job" }}'
                 apiGroup: trustyai.opendatahub.io
                 resource: status-events
                 verb: create
@@ -79,15 +103,15 @@ sequenceDiagram
     
     Note over KRP: 2. Authorization Config Selection
     KRP->>KRP: Check endpoints[] for path match
-    KRP->>KRP: Path matches: /api/v1/evaluations/jobs/*/events
+    KRP->>KRP: Path matches: /api/v1/evaluations/jobs/{job}/events
     KRP->>KRP: Use Format2 (endpoint-specific rules)
     
     Note over KRP: 3. Template Expansion
     KRP->>KRP: Extract X-Tenant header: "tenant-a"
-    KRP->>KRP: Build resource attributes:<br/>namespace: "tenant-a"<br/>resource: "status-events"<br/>verb: "create"
+    KRP->>KRP: Build resource attributes:<br/>namespace: "tenant-a"<br/>name: "j1"<br/>resource: "status-events"<br/>verb: "create"
     
     Note over KRP: 4. SubjectAccessReview
-    KRP->>K8s: SubjectAccessReview{<br/>  user: "system:serviceaccount:tenant-a:client"<br/>  namespace: "tenant-a"<br/>  resource: "status-events"<br/>  verb: "create"<br/>}
+    KRP->>K8s: SubjectAccessReview{<br/>  user: "system:serviceaccount:tenant-a:client"<br/>  namespace: "tenant-a"<br/>  name: "j1"<br/>  resource: "status-events"<br/>  verb: "create"<br/>}
     K8s-->>KRP: Decision: ALLOW
     
     Note over KRP: 5. Request Forwarding
@@ -289,7 +313,7 @@ flowchart TD
 ### 3. Request Path Optimization
 ```go
 // Efficient path matching with pre-split segments
-func matchEndpoint(requestPath string, endpoint Endpoint) bool {
+func matchEndpoint(requestPath string, endpoint Endpoint) (bool, map[string]string) {
     patternParts := endpoint.PathParts  // Pre-computed at startup
     requestPath = path.Clean(requestPath)
     endpointParts := strings.Split(requestPath, "/")
@@ -297,14 +321,15 @@ func matchEndpoint(requestPath string, endpoint Endpoint) bool {
     if len(endpointParts) != len(patternParts) {
         return false  // Early exit for different lengths
     }
-    // ... segment-by-segment comparison
+    // Literal and '*' segments are matched directly; {name} segments
+    // are stored in the returned PathParams map.
 }
 ```
 
 ## Testing Strategy
 
 ### Test Categories Covered
-1. **Path Matching**: Wildcard patterns, edge cases, normalization
+1. **Path Matching**: Legacy `*` placeholders, named captures, edge cases, normalization
 2. **Method Filtering**: Case sensitivity, empty lists, missing methods  
 3. **Template Expansion**: Valid syntax, error cases, missing values
 4. **Authorization Flow**: End-to-end with real headers and authentication
@@ -323,7 +348,8 @@ func matchEndpoint(requestPath string, endpoint Endpoint) bool {
 | 🟢 **Low** | Proper RBAC with namespace-scoped permissions | Standard configuration |
 | 🟡 **Medium** | Information disclosure via error messages | Sanitize error responses |
 | 🔴 **High** | Overly broad ClusterRoleBindings | RBAC auditing and validation |
-| 🔴 **High** | Template injection attacks | Input validation and sanitization |
+| 🟡 **Medium** | Untrusted path/header/query values selecting SAR fields | Use narrow RBAC and validate trusted tenant/resource selectors |
+| 🟡 **Medium** | Ambiguous or overlapping endpoint patterns | Prefer specific literal prefixes and review endpoint ordering |
 
 ## Conclusion
 

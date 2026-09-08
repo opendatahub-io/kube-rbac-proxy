@@ -72,7 +72,7 @@ Path-scoped rules with per-method mappings. This is the more powerful format:
 ```yaml
 authorization:
   endpoints:
-    - path: /api/v1/evaluations/jobs/*/events
+    - path: /api/v1/evaluations/jobs/{job}/events
       mappings:
         - methods: [post]
           resources:
@@ -94,7 +94,9 @@ authorization:
 ```
 
 Key properties:
-- `path` supports `*` wildcards that match exactly one path segment.
+- `path` supports named captures such as `{job}` that match exactly one path segment.
+- Captured values are available in templates through `.PathParams`, for example `{{ index .PathParams "job" }}`.
+- The legacy `*` segment remains supported as a match-only placeholder and is not available to templates.
 - Each mapping binds HTTP methods to resource rules.
 - Each resource rule can have its own `rewrites` and `resourceAttributes`.
 - When Format 2 matches a path, Format 1 rules are **skipped entirely** for that request.
@@ -133,7 +135,7 @@ Here is the complete flow from HTTP request to authorization decision:
      |
    3a. Format2 path matching (endpoints.go:matchEndpoint)
        - path.Clean() normalizes the request path
-       - Segment-by-segment comparison, "*" matches one segment
+       - Segment-by-segment comparison; named captures such as `{job}` match one segment
        - First matching endpoint wins
      |
    3b. Rewrite extraction (endpoints.go:attributesFromEndpointResourceRules)
@@ -183,6 +185,7 @@ Format 1 creates one SAR per value. Multiple query params or headers produce mul
 | `{{ .Value }}`        | Header value if set, else query value (compat)  |
 | `{{ .FromHeader }}`   | HTTP header value (from `byHttpHeader.name`)    |
 | `{{ .FromQueryString }}` | Query parameter value (from `byQueryParameter.name`) |
+| `{{ index .PathParams "name" }}` | Value captured by a `{name}` path segment |
 | `{{ .FromMethod }}`   | Kubernetes verb derived from HTTP method        |
 
 HTTP method to Kubernetes verb mapping (`pkg/authz/endpoints.go:219`):
@@ -280,7 +283,7 @@ data:
     authorization:
       endpoints:
         # Endpoint 1: tenant-scoped event ingestion
-        - path: /api/v1/jobs/*/events
+        - path: /api/v1/jobs/{job}/events
           mappings:
             - methods: [post]
               resources:
@@ -561,7 +564,7 @@ This collapses `//`, resolves `.` and `..`, and strips trailing slashes. This pr
 - `/api/v1/jobs//job-1/events` -- collapsed to `/api/v1/jobs/job-1/events`
 - `/api/v1/jobs/job-1/events/` -- trailing slash stripped
 
-The `*` wildcard matches **exactly one** segment (not zero, not multiple), preventing wildcard over-matching.
+Named path captures such as `{job}` match **exactly one** segment (not zero, not multiple), preventing over-matching.
 
 **Source:** `pkg/authz/endpoints.go:131-153`
 
@@ -605,7 +608,7 @@ This prevents "fail-open" scenarios where a misconfigured rule silently passes a
 
 1. **Restrict header sources:** When using `byHttpHeader`, ensure the upstream load balancer or ingress strips or overwrites the rewrite header (e.g., `X-Tenant`) to prevent clients from spoofing authorization scope. kube-rbac-proxy trusts the header value as-is.
 
-2. **Avoid broad wildcards:** A path like `/*` or `/api/*` matches many endpoints. Prefer specific paths to minimize unintended matches.
+2. **Avoid broad captures:** A path like `/{resource}` or `/api/{resource}` can match many endpoints. Prefer specific literal prefixes to minimize unintended matches.
 
 3. **Audit verb mappings:** If only `POST` should be allowed, don't include `GET` in the methods list. Unmapped methods get a hard 403, which is the safest default.
 
