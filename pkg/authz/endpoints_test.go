@@ -40,22 +40,21 @@ func TestMatchEndpoint(t *testing.T) {
 	}{
 		{"/api/v1/jobs", "/api/v1/jobsabc", false},
 		{"/api/v1/jobs", "/api/v1/jobs/123", false},
-		{"/api/v1/jobs/{job}", "/api/v1/jobs", false},
-		{"/api/v1/jobs/{job}", "/api/v1/jobs/123", true},
+		{"/api/v1/jobs/*", "/api/v1/jobs", false},
 		{"/api/v1/jobs/*", "/api/v1/jobs/123", true},
-		{"/api/v1/jobs/{job}", "/api/v1/jobs/123/details", false},
-		{"/api/{version}/jobs/{job}", "/api/v2/jobs/abc", true},
-		{"/api/{version}/jobs/{job}", "/api/v2/users/123", false},
-		{"/api/v1/evaluations/jobs/{job}/events", "/api/v1/evaluations/jobs", false},
-		{"/api/v1/evaluations/jobs/{job}/events", "/api/v1/evaluations/jobs/j1/events", true},
-		{"/api/v1/evaluations/jobs/{job}/events", "/api/v1/evaluations/jobs/j1/events/extra", false},
-		{"/api/v1/jobs/{job}", "//api/v1/jobs/99", true},
-		{"/api/v1/jobs/{job}", "/api/v1/jobs/99/", true},
+		{"/api/v1/jobs/*", "/api/v1/jobs/123/details", false},
+		{"/api/*/jobs/*", "/api/v2/jobs/abc", true},
+		{"/api/*/jobs/*", "/api/v2/users/123", false},
+		{"/api/v1/evaluations/jobs/*/events", "/api/v1/evaluations/jobs", false},
+		{"/api/v1/evaluations/jobs/*/events", "/api/v1/evaluations/jobs/j1/events", true},
+		{"/api/v1/evaluations/jobs/*/events", "/api/v1/evaluations/jobs/j1/events/extra", false},
+		{"/api/v1/jobs/*", "//api/v1/jobs/99", true},
+		{"/api/v1/jobs/*", "/api/v1/jobs/99/", true},
 	}
 
 	for _, c := range cases {
 		ep := Endpoint{Path: c.pattern, PathParts: strings.Split(c.pattern, "/")}
-		match, _ := MatchEndpoint(c.path, ep)
+		match := MatchEndpoint(c.path, ep)
 		if match != c.expectedMatch {
 			t.Errorf("MatchEndpoint(%q, pattern %q) = %v, want %v", c.path, c.pattern, match, c.expectedMatch)
 		}
@@ -425,11 +424,12 @@ func TestMatchEndpoint_CapturesNamedSegments(t *testing.T) {
 	}{
 		{"/api/v1/tenants/{tenant}/metrics", "/api/v1/tenants/tenant-a/metrics", map[string]string{"tenant": "tenant-a"}},
 		{"/api/{version}/tenants/{tenant}/jobs/{job}", "/api/v2/tenants/my-ns/jobs/job-1", map[string]string{"version": "v2", "tenant": "my-ns", "job": "job-1"}},
+		{"/api/v1/jobs/*/{id}", "/api/v1/jobs/queue/123", map[string]string{"id": "123"}},
 		{"/api/v1/jobs", "/api/v1/jobs", map[string]string{}},
 	}
 	for _, c := range cases {
 		ep := Endpoint{Path: c.pattern, PathParts: strings.Split(c.pattern, "/")}
-		matched, captured := MatchEndpoint(c.path, ep)
+		matched, captured := MatchEndpointCaptures(c.path, ep)
 		if !matched {
 			t.Errorf("MatchEndpoint(%q, %q): expected match", c.path, c.pattern)
 			continue

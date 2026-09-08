@@ -125,14 +125,23 @@ func (cfg *Config) prepareEndpointPatterns() {
 	}
 }
 
-// MatchEndpoint reports whether requestPath matches the configured endpoint pattern and returns
-// values captured by named path segments. A segment such as {tenant} captures one request segment
-// under the key "tenant". The legacy "*" segment matches one request segment but is not captured.
+// MatchEndpoint reports whether requestPath matches the configured endpoint pattern.
+// It preserves the original boolean-only API; use MatchEndpointCaptures when named
+// path values are needed.
 // requestPath is cleaned with path.Clean (collapse duplicate slashes, ".", "..", trailing slash)
 // before splitting. Matching is exact by segment count against endpoint.Path (after PrepareEndpoints).
 // A named capture segment such as "{tenant}" matches exactly one request segment;
 // it does not match zero or multiple trailing segments.
-func MatchEndpoint(requestPath string, endpoint Endpoint) (bool, map[string]string) {
+
+func MatchEndpoint(requestPath string, endpoint Endpoint) bool {
+	matched, _ := matchEndpoint(requestPath, endpoint)
+	return matched
+}
+
+// MatchEndpointCaptures reports whether requestPath matches and returns values captured
+// by named path segments. A segment such as {tenant} captures one request segment under
+// the key "tenant". The legacy "*" segment matches one request segment but is not captured.
+func MatchEndpointCaptures(requestPath string, endpoint Endpoint) (bool, map[string]string) {
 	return matchEndpoint(requestPath, endpoint)
 }
 
