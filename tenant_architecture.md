@@ -343,12 +343,19 @@ func matchEndpoint(requestPath string, endpoint Endpoint) (bool, map[string]stri
 
 ## Risk Assessment
 
+Path captures and rewrite values are expected inputs to this feature. They do not
+grant access by themselves: kube-rbac-proxy submits the selected namespace and
+resource name in a SAR for the already authenticated user, and Kubernetes RBAC
+still makes the authorization decision. The relevant risk is configuration that
+trusts a client-controlled header as an identity boundary or grants the caller
+permissions broader than intended.
+
 | Risk Level | Scenario | Mitigation |
 |------------|----------|------------|
 | 🟢 **Low** | Proper RBAC with namespace-scoped permissions | Standard configuration |
 | 🟡 **Medium** | Information disclosure via error messages | Sanitize error responses |
 | 🔴 **High** | Overly broad ClusterRoleBindings | RBAC auditing and validation |
-| 🟡 **Medium** | Untrusted path/header/query values selecting SAR fields | Use narrow RBAC and validate trusted tenant/resource selectors |
+| 🟡 **Medium** | Client-controlled rewrite header used as a trusted identity boundary | Strip/overwrite the header at a trusted ingress, or derive the tenant from authenticated identity |
 | 🟡 **Medium** | Ambiguous or overlapping endpoint patterns | Prefer specific literal prefixes and review endpoint ordering |
 
 ## Conclusion
