@@ -214,6 +214,46 @@ flowchart TD
     style MethodNotAllowed fill:#ffebee
 ```
 
+## Endpoint Precedence and Ambiguity
+
+Endpoint matching uses configuration order. The first endpoint whose path
+matches the request owns the request; later matching endpoints are not checked.
+This applies equally to literal segments, legacy `*` match-only segments, and
+named captures such as `{tenant}`.
+
+For example, both endpoints below match
+`/api/tenant-a/jobs/job-123`:
+
+```yaml
+authorization:
+  endpoints:
+    - path: /api/{tenant}/jobs/{id}
+      mappings:
+        - methods: [get]
+          resources: [...]
+
+    - path: /api/tenant-a/jobs/{id}
+      mappings:
+        - methods: [post]
+          resources: [...]
+```
+
+The first endpoint wins. A `POST` request is rejected with `403` because the
+first endpoint matched the path but does not allow `POST`; matching does not
+continue to the second endpoint.
+
+The same first-match rule applies to multiple mappings accepting the same HTTP
+method: the first matching mapping is used.
+
+To avoid unexpected authorization behavior:
+
+1. Place specific literal paths before broad paths.
+2. Avoid duplicate or overlapping endpoint patterns where possible.
+3. Do not rely on a later endpoint to handle a method rejected by an earlier
+   matching endpoint.
+4. Treat endpoint order as part of the authorization configuration and review
+   it when adding new routes.
+
 ## Security Recommendations
 
 ### 1. Principle of Least Privilege
