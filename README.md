@@ -59,11 +59,13 @@ Kube-rbac-proxy flags:
       --auth-header-groups-field-name string        The name of the field inside a http(2) request header to tell the upstream server about the user's groups (default "x-remote-groups")
       --auth-header-groups-field-separator string   The separator string used for concatenating multiple group names in a groups header field's value (default "|")
       --auth-header-user-field-name string          The name of the field inside a http(2) request header to tell the upstream server about the user's name (default "x-remote-user")
+      --auth-timeout duration                       Maximum amount of time allowed for authentication and authorization together. The earlier of this limit and --upstream-timeout applies. A value of 0 disables only the auth-specific limit. (default 30s)
       --auth-token-audiences strings                Comma-separated list of token audiences to accept. By default a token does not have to have any specific audience. It is recommended to set a specific audience.
       --client-ca-file string                       If set, any request presenting a client certificate signed by one of the authorities in the client-ca-file is authenticated with an identity corresponding to the CommonName of the client certificate.
       --config-file string                          Configuration file to configure kube-rbac-proxy.
       --http2-max-concurrent-streams uint32         The maximum number of concurrent streams per HTTP/2 connection. (default 100)
       --http2-max-size uint32                       The maximum number of bytes that the server will accept for frame size and buffer per stream in a HTTP/2 request. (default 262144)
+      --idle-timeout duration                       Maximum duration the servers wait for the next request on a keep-alive connection. A value of 0 disables the bound. (default 1m0s)
       --ignore-paths strings                        Comma-separated list of paths against which kube-rbac-proxy pattern-matches the incoming request. If the requst matches, it will proxy the request without performing an authentication or authorization check. Cannot be used with --allow-paths.
       --insecure-listen-address string              [DEPRECATED] The address the kube-rbac-proxy HTTP server should listen on.
       --kube-api-burst int                          kube-api burst value; needed when kube-api-qps is set
@@ -78,9 +80,11 @@ Kube-rbac-proxy flags:
       --oidc-username-claim string                  Identifier of the user in JWT claim, by default set to 'email' (default "email")
       --oidc-username-prefix string                 If provided, the username will be prefixed with this value to prevent conflicts with other authentication strategies.
       --proxy-endpoints-port int                    The port to securely serve proxy-specific endpoints (such as '/healthz'). Uses the host from the '--secure-listen-address'.
+      --read-header-timeout duration                Maximum duration the servers wait for a request's headers on HTTP/1.1 connections. A value of 0 disables the bound. The proxy listeners set no fixed request-body read deadline: --upstream-timeout cancels the upstream request only when non-zero, and does not guarantee that a stalled inbound body read ends. The /healthz probe listener also applies this value as a full read deadline since it serves only bodyless probes. HTTP/2 header reads on the proxy listeners are not bounded by this flag: golang.org/x/net/http2 has no header-only deadline, and its only read deadline (http.Server.ReadTimeout) would also bound request bodies. (default 10s)
       --secure-listen-address string                The address the kube-rbac-proxy HTTPs server should listen on.
       --tls-cert-file string                        File containing the default x509 Certificate for HTTPS. (CA cert, if any, concatenated after server cert)
       --tls-cipher-suites strings                   Comma-separated list of cipher suites for the server. Values are from tls package constants (https://golang.org/pkg/crypto/tls/#pkg-constants). If omitted, the default Go cipher suites will be used
+      --tls-curve-preferences int32Slice            Comma-separated set of enabled numeric Go crypto/tls CurveID values for the server. Order is ignored. See https://pkg.go.dev/crypto/tls#CurveID for values supported by the current Go version. If omitted, Go defaults are used (default [])
       --tls-min-version string                      Minimum TLS version supported. Accepts both Go constant names (VersionTLS12, VersionTLS13) and short names (TLS1.2, TLS1.3). (default "VersionTLS12")
       --tls-private-key-file string                 File containing the default x509 private key matching --tls-cert-file.
       --tls-reload-interval duration                [DEPRECATED] The interval at which to watch for TLS certificate changes, by default set to 1 minute. (default 1m0s)
@@ -89,7 +93,16 @@ Kube-rbac-proxy flags:
       --upstream-client-cert-file string            If set, the client will be used to authenticate the proxy to upstream. Requires --upstream-client-key-file to be set, too.
       --upstream-client-key-file string             The key matching the certificate from --upstream-client-cert-file. If set, requires --upstream-client-cert-file to be set, too.
       --upstream-force-h2c                          Force h2c to communicate with the upstream. This is required when the upstream speaks h2c(http/2 cleartext - insecure variant of http/2) only. For example, go-grpc server in the insecure mode, such as helm's tiller w/o TLS, speaks h2c only
-      --upstream-timeout duration                   Maximum amount of time the server will wait for a response from the upstream. (default 30s)
+      --upstream-timeout duration                   Maximum total time from request start through authentication, authorization, writing the upstream request, and receiving upstream response headers. A value of 0 disables the overall timeout; response-body streaming is not limited. (default 30s)
+
+Audit logging flags:
+
+      --audit-ai-provider string          AI provider to include in audit events when a resource name is resolved.
+      --audit-log-profile string          Audit logging profile. Supported values are "none" (disabled) and "metadata" (request and response metadata without bodies). (default "none")
+      --audit-resource-name string        Resource name to include in audit events. Falls back to authorization resourceAttributes.name.
+      --audit-resource-namespace string   Resource namespace to include in audit events. Falls back to authorization resourceAttributes.namespace.
+      --audit-resource-type string        OCSF resource type to include in audit events.
+      --audit-use-forwarded-for           Trust X-Forwarded-For for audit source addresses. Enable only when the listener is reached through a trusted router.
 
 Global flags:
 
@@ -97,6 +110,25 @@ Global flags:
       --version version[=true]   --version, --version=raw prints version information and quits; --version=vX.Y.Z... sets the reported version
 ```
 
+### AI inference audit logging
+
+Set `--audit-log-profile=metadata` to attempt to emit one [OCSF 1.9.0 API Activity](https://github.com/ocsf/ocsf-schema/blob/v1.9.0/events/application/api_activity.json) event with the OCSF `ai_operation` profile per authentication-protected request. The default `--audit-log-profile=none` emits no audit events. These logging-profile values are kube-rbac-proxy configuration and do not replace the OCSF profile recorded inside each event. Audit records are written as JSON lines to stdout; operational logs remain on stderr. Requests matching `--ignore-paths`, requests rejected by `--allow-paths`, and the separate proxy health endpoint are not audited.
+
+The metadata profile is availability-first and best-effort. Request records larger than 64 KiB are replaced with bounded API Activity records that preserve core identity, target, request, response, and outcome data. These records set the OCSF `metadata.is_truncated` flag and record the original serialized size, in whole kilobytes rounded up, in `metadata.untruncated_size`. Audit output uses a bounded, non-blocking queue so a slow sink cannot stall requests. Records lost because the queue is full or an ordinary sink write fails are aggregated, and the writer emits an OCSF 1.9.0 [Base Event](https://github.com/ocsf/ocsf-schema/blob/v1.9.0/events/base_event.json) named `Audit Event Loss` before the next queued request record once output recovers. A failed loss-summary write retains the snapshot for the next attempt. Graceful shutdown drains the queue and attempts a final loss summary; abrupt termination can still lose queued records or an in-memory pending summary.
+
+Resource name and namespace are resolved independently. For each field, an explicit `--audit-resource-name` or `--audit-resource-namespace` value takes precedence, followed by the request-specific value resolved from `authorization.resourceAttributes`, and finally by the corresponding static Format1 `authorization.resourceAttributes` value when it does not contain a template delimiter. A matched Format2 endpoint owns the request, so a Format2 resolution error does not fall back to unrelated Format1 metadata; explicit audit resource flags remain available. Missing metadata does not prevent the proxy from starting or emitting a request event. `--audit-resource-type` is optional and is included only when configured; it is not inferred from the Kubernetes resource attribute.
+
+For example, a KServe sidecar can use `--audit-log-profile=metadata` and identify its target with `--audit-resource-name=<name>`, `--audit-resource-namespace=<namespace>`, `--audit-resource-type=InferenceService`, and `--audit-ai-provider=KServe`. The OCSF `ai_model` field is emitted only when a resource name is resolved and `--audit-ai-provider` is nonempty.
+
+The event records the authenticated Kubernetes principal name, UID, and groups literally. Treat audit output as sensitive identity data and restrict access to stdout collection, storage, and downstream audit systems with appropriate access controls.
+
+By default, the TCP peer is recorded as the source. `--audit-use-forwarded-for` makes the rightmost syntactically valid `X-Forwarded-For` address the source and records the validated address chain. Enabling the flag is an explicit contract that traffic reaches the listener exclusively through a trusted router that appends the peer address; kube-rbac-proxy does not configure or discover trusted CIDRs. Without that deployment guarantee, clients can spoof forwarded headers. This contract matches OpenShift's default [Append forwarded-header policy](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/ingress_and_load_balancing/routes).
+
+Audit records contain request metadata and response metrics only. Bearer tokens, request and response bodies, query strings, cookies, and arbitrary headers are never recorded. For a protocol upgrade, the captured upstream `101 Switching Protocols` status is recorded, but bytes transferred through the hijacked tunnel are unavailable and `http_response.body_length` remains `0`.
+
+`--auth-timeout` limits authentication and authorization together to 30 seconds by default. Both stages share one deadline and do not receive fresh timeouts. The earlier of the auth deadline and the overall `--upstream-timeout` deadline applies; `--auth-timeout=0` disables only the auth-specific limit.
+
+`--upstream-timeout` is one total budget from request arrival through authentication, authorization, upstream connection setup and request upload, and receipt of upstream response headers. Time spent authenticating and authorizing consumes that budget instead of resetting it. After headers arrive, the timeout is disarmed and response-body streaming continues until the stream completes, fails, or is canceled.
 
 ### How to update Go dependencies
 
