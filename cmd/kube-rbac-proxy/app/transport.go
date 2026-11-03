@@ -17,13 +17,135 @@ limitations under the License.
 package app
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 )
+
+var errUpstreamTimeout = errors.New("upstream timeout")
+
+type upstreamTimeoutRoundTripper struct {
+	next      http.RoundTripper
+	timeout   time.Duration
+	now       func() time.Time
+	afterFunc func(time.Duration, func()) *time.Timer
+}
+
+func withUpstreamTimeout(next http.RoundTripper, timeout time.Duration) http.RoundTripper {
+	if timeout <= 0 {
+		return next
+	}
+
+	return &upstreamTimeoutRoundTripper{
+		next:    next,
+		timeout: timeout,
+	}
+}
+
+func (r *upstreamTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	now := r.now
+	if now == nil {
+		now = time.Now
+	}
+	timeout := r.timeout
+	if budget, ok := req.Context().Value(requestTimeoutBudgetContextKey{}).(requestTimeoutBudget); ok && !budget.upstreamDeadline.IsZero() {
+		timeout = budget.upstreamDeadline.Sub(now())
+	}
+	if timeout <= 0 {
+		if cause := context.Cause(req.Context()); cause != nil {
+			return nil, cause
+		}
+		return nil, fmt.Errorf("upstream request before response headers: %w", context.DeadlineExceeded)
+	}
+
+	ctx, cancel := context.WithCancelCause(req.Context())
+
+	var mu sync.Mutex
+	completed := false
+	timedOut := false
+	var timer *time.Timer
+	afterFunc := r.afterFunc
+	if afterFunc == nil {
+		afterFunc = time.AfterFunc
+	}
+	timer = afterFunc(timeout, func() {
+		mu.Lock()
+		if completed {
+			mu.Unlock()
+			return
+		}
+		timedOut = true
+		cancel(errUpstreamTimeout)
+		mu.Unlock()
+	})
+	resp, err := r.next.RoundTrip(req.WithContext(ctx))
+
+	mu.Lock()
+	completed = true
+	if timer != nil {
+		timer.Stop()
+	}
+	timeoutWon := timedOut && context.Cause(ctx) == errUpstreamTimeout
+	mu.Unlock()
+
+	if timeoutWon {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, fmt.Errorf("upstream request before response headers: %w", context.DeadlineExceeded)
+	}
+
+	if err != nil || resp == nil || resp.Body == nil {
+		cancel(nil)
+		return resp, err
+	}
+
+	if readWriteBody, ok := resp.Body.(io.ReadWriteCloser); ok {
+		resp.Body = &cancelOnCloseReadWriteCloser{
+			ReadWriteCloser: readWriteBody,
+			cancel:          cancel,
+		}
+	} else {
+		resp.Body = &cancelOnCloseReadCloser{
+			ReadCloser: resp.Body,
+			cancel:     cancel,
+		}
+	}
+	return resp, nil
+}
+
+type cancelOnCloseReadCloser struct {
+	io.ReadCloser
+	cancel     context.CancelCauseFunc
+	cancelOnce sync.Once
+}
+
+func (r *cancelOnCloseReadCloser) Close() error {
+	r.cancelOnce.Do(func() {
+		r.cancel(nil)
+	})
+	return r.ReadCloser.Close()
+}
+
+type cancelOnCloseReadWriteCloser struct {
+	io.ReadWriteCloser
+	cancel     context.CancelCauseFunc
+	cancelOnce sync.Once
+}
+
+func (r *cancelOnCloseReadWriteCloser) Close() error {
+	r.cancelOnce.Do(func() {
+		r.cancel(nil)
+	})
+	return r.ReadWriteCloser.Close()
+}
 
 func initTransport(upstreamCAPool *x509.CertPool, upstreamClientCertPath, upstreamClientKeyPath string, timeout time.Duration) (http.RoundTripper, error) {
 	if upstreamCAPool == nil {
@@ -47,14 +169,16 @@ func initTransport(upstreamCAPool *x509.CertPool, upstreamClientCertPath, upstre
 		}
 	}
 
-	// http.Transport sourced from go 1.10.7
-	transport := &http.Transport{
+	// Custom TLS config is required here: operator-supplied CA bundles
+	// (--upstream-ca-file) and optional mTLS client certificates for
+	// upstreams. Verification is never disabled and MinVersion is a
+	// TLS 1.2 floor, not a cap.
+	transport := &http.Transport{ // nosemgrep: go-http-client-tls-override
 		ForceAttemptHTTP2: true,
 		Proxy:             http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
-			DualStack: true,
 		}).DialContext,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
