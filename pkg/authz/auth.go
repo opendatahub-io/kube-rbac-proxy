@@ -120,12 +120,46 @@ func (saConfig StaticAuthorizationConfig) Matches(a authorizer.Attributes) bool 
 		}
 	}
 
+	// isAllowedInList reports whether the request value is contained in the
+	// configured list. An empty configured list matches any value (the
+	// field is not restricted).
+	isAllowedInList := func(staticConf []string, requestVal string) bool {
+		if len(staticConf) == 0 {
+			return true
+		}
+		for _, v := range staticConf {
+			if v == requestVal {
+				return true
+			}
+		}
+		return false
+	}
+
+	user := a.GetUser()
 	userName := ""
-	if a.GetUser() != nil {
-		userName = a.GetUser().GetName()
+	if user != nil {
+		userName = user.GetName()
+	}
+
+	// When groups are configured, the request user must be a member of at
+	// least one of them. A group-only rule (name empty, groups non-empty)
+	// previously matched every authenticated user because Groups was never
+	// compared (RHAI-22813).
+	groupsMatch := true
+	if len(saConfig.User.Groups) > 0 {
+		groupsMatch = false
+		if user != nil {
+			for _, g := range user.GetGroups() {
+				if isAllowedInList(saConfig.User.Groups, g) {
+					groupsMatch = true
+					break
+				}
+			}
+		}
 	}
 
 	if isAllowed(saConfig.User.Name, userName) &&
+		groupsMatch &&
 		isAllowed(saConfig.Verb, a.GetVerb()) &&
 		isAllowed(saConfig.Namespace, a.GetNamespace()) &&
 		isAllowed(saConfig.APIGroup, a.GetAPIGroup()) &&
